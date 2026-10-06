@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liquid Glass Messenger</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+      min-height: 100vh;
+    }
+    .glass {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+  </style>
+</head>
+<body class="text-white flex flex-col justify-between min-h-screen font-sans">
+
+  <!-- Header / Status Bar -->
+  <header class="p-4 border-b border-white/10 glass flex justify-between items-center">
+    <h1 class="text-xl font-bold tracking-wide text-indigo-300">Liquid Glass</h1>
+    <div class="flex items-center gap-2">
+      <span class="text-sm text-gray-300">Status:</span>
+      <span id="status-indicator" class="text-gray-400 font-semibold">Offline</span>
+    </div>
+  </header>
+
+  <!-- Main Chat / Pairing Container -->
+  <main class="flex-1 max-w-2xl w-full mx-auto p-4 flex flex-col justify-between">
+    
+    <!-- Pairing Screen (Visible if not paired) -->
+    <div id="pairing-section" class="glass p-6 rounded-2xl shadow-xl text-center space-y-4 my-auto">
+      <h2 class="text-2xl font-bold text-white">Device Pairing</h2>
+      <p class="text-sm text-gray-300">Share your PIN with your partner or enter theirs to start chatting.</p>
+      
+      <div class="bg-white/10 p-4 rounded-xl text-2xl font-mono tracking-widest text-indigo-300">
+        Your PIN: <span id="my-pin" class="font-bold text-white">------</span>
+      </div>
+
+      <div class="flex gap-2">
+        <input id="pair-pin-input" type="text" placeholder="Enter Partner PIN" 
+          class="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 text-center font-mono" />
+        <button onclick="pairDevice()" 
+          class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-xl font-semibold transition">
+          Connect
+        </button>
+      </div>
+    </div>
+
+    <!-- Chat Screen (Visible after pairing) -->
+    <div id="chat-section" class="hidden flex-1 flex flex-col justify-between space-y-4">
+      <div id="messages-container" class="glass rounded-2xl p-4 flex-1 overflow-y-auto space-y-3 max-h-[65vh]">
+        <!-- Messages populate dynamically -->
+      </div>
+
+      <form id="chat-form" class="flex gap-2" onsubmit="sendMessage(event)">
+        <input id="message-input" type="text" placeholder="Type a message..." 
+          class="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500" />
+        <button type="submit" 
+          class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-semibold transition">
+          Send
+        </button>
+      </form>
+    </div>
+
+  </main>
+
+  <script>
+    // Force WebSocket transport for minimal latency
+    const socket = io({
+      transports: ['websocket']
+    });
+
+    // Unique Device ID generation and persistence
+    const deviceId = localStorage.getItem('deviceId') || crypto.randomUUID();
+    localStorage.setItem('deviceId', deviceId);
+
+    // Get paired device ID from local storage
+    let pairedDeviceId = localStorage.getItem('pairedDeviceId');
+
+    // Generate or fetch random 6-digit PIN
+    let myPin = localStorage.getItem('myPin');
+    if (!myPin) {
+      myPin = Math.floor(100000 + Math.random() * 900000).toString();
+      localStorage.setItem('myPin', myPin);
+    }
+    document.getElementById('my-pin').textContent = myPin;
+
+    // Check pairing state on load
+    if (pairedDeviceId) {
+      showChatSection();
+    }
+
+    // Auto-register device when socket connects or reconnects
+    socket.on('connect', () => {
+      const currentPairedId = localStorage.getItem('pairedDeviceId');
+      socket.emit('register-device', { deviceId, pairedDeviceId: currentPairedId });
+    });
+
+    // Handle real-time online/offline status updates from server
+    socket.on('status-update', ({ online }) => {
+      const statusElement = document.getElementById('status-indicator');
+      if (statusElement) {
+        statusElement.textContent = online ? 'Online' : 'Offline';
+        statusElement.className = online ? 'text-green-400 font-semibold' : 'text-gray-400';
+      }
+    });
+
+    // Handle paired device disconnection
+    socket.on('device-disconnected', ({ deviceId: disconnectedId }) => {
+      const currentPairedId = localStorage.getItem('pairedDeviceId');
+      if (disconnectedId === currentPairedId) {
+        const statusElement = document.getElementById('status-indicator');
+        if (statusElement) {
+          statusElement.textContent = 'Offline';
+          statusElement.className = 'text-gray-400';
+        }
+      }
+    });
+
+    // Pair devices manually using PIN
+    function pairDevice() {
+      const targetPin = document.getElementById('pair-pin-input').value.trim();
+      if (!targetPin) return alert('Please enter a valid PIN');
+
+      // For this step, we map PIN to target device and save locally
+      localStorage.setItem('pairedDeviceId', targetPin);
+      pairedDeviceId = targetPin;
+      
+      showChatSection();
+      socket.emit('register-device', { deviceId, pairedDeviceId: targetPin });
+    }
+
+    function showChatSection() {
+      document.getElementById('pairing-section').classList.add('hidden');
+      document.getElementById('chat-section').classList.remove('hidden');
+    }
+
+    // Send Message Handler
+    function sendMessage(e) {
+      e.preventDefault();
+      const input = document.getElementById('message-input');
+      const text = input.value.trim();
+      
+      if (text) {
+        const messageData = {
+          senderId: deviceId,
+          text: text,
+          timestamp: new Date()
+        };
+        socket.emit('send-message', messageData);
+        input.value = '';
+      }
+    }
+
+    // Receive incoming messages in real-time
+    socket.on('receive-message', (msg) => {
+      const container = document.getElementById('messages-container');
+      const msgDiv = document.createElement('div');
+      
+      const isMe = msg.senderId === deviceId;
+      msgDiv.className = `p-3 rounded-xl max-w-[80%] ${
+        isMe ? 'bg-indigo-600 ml-auto text-right' : 'bg-white/10 mr-auto text-left'
+      }`;
+      
+      msgDiv.textContent = msg.text;
+      container.appendChild(msgDiv);
+      container.scrollTop = container.scrollHeight;
+    });
+  </script>
+</body>
+</html>
